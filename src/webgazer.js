@@ -4,7 +4,7 @@
     "use strict"
 
     //auto invoke function to bind our own copy of window and undefined
-    
+
     //set up namespaces for modules
     window.webgazer = window.webgazer || {};
     webgazer.tracker = webgazer.tracker || {};
@@ -12,33 +12,41 @@
     webgazer.params = webgazer.params || {};
 
     //PRIVATE VARIABLES
-    
+
     //video elements
     webgazer.params.videoScale = 1;
     var videoElement = null;
     var videoElementCanvas = null;
-    webgazer.params.videoElementId = 'webgazerVideoFeed'; 
+    webgazer.params.videoElementId = 'webgazerVideoFeed';
     webgazer.params.videoElementCanvasId = 'webgazerVideoCanvas';
     webgazer.params.imgWidth = 1280;
     webgazer.params.imgHeight = 720;
+
+    //Params to clmtrackr and getUserMedia constraints
+    webgazer.params.clmParams = webgazer.params.clmParams || {useWebGL : true};
+    webgazer.params.camConstraints = webgazer.params.camConstraints || { video:true };
 
     //DEBUG variables
     //debug control boolean
     var showGazeDot = false;
     //debug element (starts offscreen)
     var gazeDot = document.createElement('div');
-    gazeDot.style.position = 'absolute';
-    gazeDot.style.left = '20px'; //'-999em';
+    gazeDot.style.position = 'fixed';
+    gazeDot.style.zIndex = 99999;
+    gazeDot.style.left = '-5px'; //'-999em';
+    gazeDot.style.top  = '-5px';
     gazeDot.style.width = '10px';
     gazeDot.style.height = '10px';
     gazeDot.style.background = 'red';
     gazeDot.style.display = 'none';
+    gazeDot.style.borderRadius = '100%';
+    gazeDot.style.opacity = '0.7';
 
     var debugVideoLoc = '';
-        
+
     // loop parameters
     var clockStart = performance.now();
-    webgazer.params.dataTimestep = 50; 
+    webgazer.params.dataTimestep = 50;
     var paused = false;
     //registered callback for loop
     var nopCallback = function(data, time) {};
@@ -47,7 +55,7 @@
     //Types that regression systems should handle
     //Describes the source of data so that regression systems may ignore or handle differently the various generating events
     var eventTypes = ['click', 'move'];
-    
+
 
     //movelistener timeout clock parameters
     var moveClock = performance.now();
@@ -85,7 +93,7 @@
 
     /**
      * gets the pupil features by following the pipeline which threads an eyes object through each call:
-     * curTracker gets eye patches -> blink detector -> pupil detection 
+     * curTracker gets eye patches -> blink detector -> pupil detection
      * @param {Canvas} canvas - a canvas which will have the video drawn onto it
      * @param {number} width - the width of canvas
      * @param {number} height - the height of canvas
@@ -112,7 +120,7 @@
     function paintCurrentFrame(canvas, width, height) {
         //imgWidth = videoElement.videoWidth * videoScale;
         //imgHeight = videoElement.videoHeight * videoScale;
-        if (canvas.width != width) { 
+        if (canvas.width != width) {
             canvas.width = width;
         }
         if (canvas.height != height) {
@@ -170,8 +178,7 @@
                 y += smoothingVals.get(d).y;
             }
             var pred = webgazer.util.bound({'x':x/len, 'y':y/len});
-            gazeDot.style.top = window.scrollY + pred.y + 'px';
-            gazeDot.style.left = window.scrollX + pred.x + 'px';
+            gazeDot.style.transform = 'translate3d(' + pred.x + 'px,' + pred.y + 'px,0)';
         }
 
         if (!paused) {
@@ -181,9 +188,10 @@
     }
 
     /**
-     * records click data and passes it to the regression model
+     * records screen position data based on current pupil feature and passes it
+     * to the regression model.
      */
-    var clickListener = function(event) {
+    var recordScreenPosition = function(x, y, eventType) {
         if (paused) {
             return;
         }
@@ -193,8 +201,15 @@
             return null;
         }
         for (var reg in regs) {
-            regs[reg].addData(features, [event.clientX, event.clientY], eventTypes[0]); // eventType[0] === 'click'
+            regs[reg].addData(features, [x, y], eventType);
         }
+    }
+
+    /**
+     * records click data and passes it to the regression model
+     */
+    var clickListener = function(event) {
+        recordScreenPosition(event.clientX, event.clientY, eventTypes[0]); // eventType[0] === 'click'
     }
 
     /**
@@ -211,18 +226,31 @@
         } else {
             moveClock = now;
         }
-        var features = getPupilFeatures(videoElementCanvas, webgazer.params.imgWidth, webgazer.params.imgHeight);
-        if (regs.length == 0) {
-            console.log('regression not set, call setRegression()');
-            return null;
-        }
-        for (var reg in regs) {
-            regs[reg].addData(features, [event.clientX, event.clientY], eventTypes[1]); //eventType[1] === 'move'
-        }
+        recordScreenPosition(event.clientX, event.clientY, eventTypes[1]); //eventType[1] === 'move'
     }
 
-    /** loads the global data and passes it to the regression model 
-     * 
+    /**
+     * Add event listeners for mouse click and move.
+     */
+    var addMouseEventListeners = function() {
+        //third argument set to true so that we get event on 'capture' instead of 'bubbling'
+        //this prevents a client using event.stopPropagation() preventing our access to the click
+        document.addEventListener('click', clickListener, true);
+        document.addEventListener('mousemove', moveListener, true);
+    };
+
+    /**
+     * Remove event listeners for mouse click and move.
+     */
+    var removeMouseEventListeners = function() {
+        // must set third argument to same value used in addMouseEventListeners
+        // for this to work.
+        document.removeEventListener('click', clickListener, true);
+        document.removeEventListener('mousemove', moveListener, true);
+    };
+
+    /** loads the global data and passes it to the regression model
+     *
      */
     function loadGlobalData() {
         var storage = JSON.parse(window.localStorage.getItem(localstorageLabel)) || defaults;
@@ -232,7 +260,7 @@
             regs[reg].setData(storage.data);
         }
     }
-   
+
    /**
     * constructs the global storage object and adds it to localstorage
     */
@@ -262,25 +290,21 @@
      */
     function init(videoSrc) {
         videoElement = document.createElement('video');
-        videoElement.id = webgazer.params.videoElementId; 
+        videoElement.id = webgazer.params.videoElementId;
         videoElement.autoplay = true;
         console.log(videoElement);
         videoElement.style.display = 'none';
 
-        //turn the stream into a magic URL 
-        videoElement.src = videoSrc;  
+        //turn the stream into a magic URL
+        videoElement.src = videoSrc;
         document.body.appendChild(videoElement);
 
-        videoElementCanvas = document.createElement('canvas'); 
+        videoElementCanvas = document.createElement('canvas');
         videoElementCanvas.id = webgazer.params.videoElementCanvasId;
         videoElementCanvas.style.display = 'none';
         document.body.appendChild(videoElementCanvas);
 
-
-        //third argument set to true so that we get event on 'capture' instead of 'bubbling'
-        //this prevents a client using event.stopPropagation() preventing our access to the click
-        document.addEventListener('click', clickListener, true);
-        document.addEventListener('mousemove', moveListener, true);
+        addMouseEventListeners();
 
         document.body.appendChild(gazeDot);
 
@@ -310,18 +334,16 @@
             navigator.webkitGetUserMedia ||
             navigator.mozGetUserMedia;
 
-        if(navigator.getUserMedia != null){ 
-            var options = { 
-                video:true, 
-            }; 	     
-            //request webcam access 
-            navigator.getUserMedia(options, 
+        if(navigator.getUserMedia != null){
+            var options = webgazer.params.camConstraints;
+            //request webcam access
+            navigator.getUserMedia(options,
                     function(stream){
                         console.log('video stream created');
-                        init(window.URL.createObjectURL(stream));                    
-                    }, 
-                    function(e){ 
-                        console.log("No stream"); 
+                        init(window.URL.createObjectURL(stream));
+                    },
+                    function(e){
+                        console.log("No stream");
                         videoElement = null;
                     });
         }
@@ -404,7 +426,7 @@
      */
     webgazer.showPredictionPoints = function(bool) {
         showGazeDot = bool;
-        gazeDot.style.left = '-999em';
+        gazeDot.style.left = '-5px';
         gazeDot.style.display = bool ? 'block' : 'none';
         return webgazer;
     }
@@ -417,6 +439,36 @@
     webgazer.setStaticVideo = function(videoLoc) {
        debugVideoLoc = videoLoc;
        return webgazer;
+    }
+
+    /**
+     *  Add the mouse click and move listeners that add training data.
+     *  @return {webgazer} this
+     */
+    webgazer.addMouseEventListeners = function() {
+        addMouseEventListeners();
+        return webgazer;
+    }
+
+    /**
+     *  Remove the mouse click and move listeners that add training data.
+     *  @return {webgazer} this
+     */
+    webgazer.removeMouseEventListeners = function() {
+        removeMouseEventListeners();
+        return webgazer;
+    }
+
+    /**
+     *  Records current screen position for current pupil features.
+     *  @param {string} x - position on screen in the x axis
+     *  @param {string} y - position on screen in the y axis
+     *  @return {webgazer} this
+     */
+    webgazer.recordScreenPosition = function(x, y) {
+        // give this the same weight that a click gets.
+        recordScreenPosition(x, y, eventTypes[0]);
+        return webgazer;
     }
 
     //SETTERS
@@ -434,7 +486,7 @@
             }
             return webgazer;
         }
-        curTracker = curTrackerMap[name]();    
+        curTracker = curTrackerMap[name]();
         return webgazer;
     }
 
@@ -523,7 +575,7 @@
     webgazer.getTracker = function() {
         return curTracker;
     }
-    
+
     /**
      * returns the regression currently in use
      * @return {Array{regression}} an array of objects following the regression interface
@@ -537,14 +589,14 @@
      * @return {object} prediction data object
      */
     webgazer.getCurrentPrediction = function() {
-        return getPrediction(); 
+        return getPrediction();
     }
 
     /**
      * returns the different event types that may be passed to regressions when calling regression.addData()
      * @return {array} array of strings where each string is an event type
      */
-    webgazer.params.getEventTypes = function() { 
-        return eventTypes.slice(); 
+    webgazer.params.getEventTypes = function() {
+        return eventTypes.slice();
     }
 }(window));
